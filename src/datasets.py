@@ -22,6 +22,7 @@ from src.utils import RepresentationType, VoxelGrid, flow_16bit_to_float
 
 VISU_INDEX = 1
 
+# data augmentation horizontal flip追加
 def horizontal_flip(event_volume, flow_gt):
     flipped_event_volume = torch.flip(event_volume, [2])
     flipped_flow = torch.flip(flow_gt, [2])
@@ -366,7 +367,8 @@ class Sequence(Dataset):
             output['flow_gt'] = [torch.tensor(x) for x in self.load_flow(self.flow_png[index])]
             output['flow_gt'][0] = torch.moveaxis(output['flow_gt'][0], -1, 0)
             output['flow_gt'][1] = torch.unsqueeze(output['flow_gt'][1], 0)
-
+            
+            # ここでtrain時のみhorizontal flipを実行
             if self.apply_transforms:
                 output['event_volume'], output['flow_gt'][0] = horizontal_flip(output['event_volume'], output['flow_gt'][0])
 

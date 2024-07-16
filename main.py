@@ -1,7 +1,7 @@
 import torch
 import hydra
 from omegaconf import DictConfig
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import random
 import numpy as np
 from src.models.evflownet import EVFlowNet
@@ -14,7 +14,7 @@ from typing import Dict, Any
 import os
 import time
 import torch.nn.functional as F
-
+from sklearn.model_selection import train_test_split
 
 class RepresentationType(Enum):
     VOXEL = auto()
@@ -37,18 +37,19 @@ def compute_epe_error(pred_flow: torch.Tensor, gt_flow: torch.Tensor):
     epe = torch.mean(torch.mean(torch.norm(pred_flow - gt_flow, p=2, dim=1), dim=(1, 2)), dim=0)
     return epe
 
+# loss関数の変更
 def compute_multiscale_loss(pred_flows: Dict[str, torch.Tensor], gt_flow: torch.Tensor) -> torch.Tensor:
     total_loss = 0
     scales = {'flow0': 0.125, 'flow1': 0.25, 'flow2': 0.5, 'flow3': 1}
+    weights = scales
 
     for scale, factor in scales.items():
         # 正解データを予測データのサイズにリサイズ
-        scaled_gt = F.interpolate(gt_flow, size=pred_flows[scale].shape[2:], mode='bilinear', align_corners=True)
+        scaled_gt = F.interpolate(gt_flow, size=pred_flows[scale].shape[2:], mode='bicubic', align_corners=True) # modeをbase.pyに揃える
         loss = compute_epe_error(pred_flows[scale], scaled_gt)
-        total_loss += loss
+        total_loss += loss * weights[scale]
 
     return total_loss
-
 
 def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
     '''
@@ -98,16 +99,34 @@ def main(args: DictConfig):
     train_set = loader.get_train_dataset()
     test_set = loader.get_test_dataset()
     collate_fn = train_collate
-    train_data = DataLoader(train_set,
-                                 batch_size=args.data_loader.train.batch_size,
-                                 shuffle=args.data_loader.train.shuffle,
-                                 collate_fn=collate_fn,
-                                 drop_last=False)
+
+    # トレーニングデータをトレーニングと検証に分割する
+    train_indices, val_indices = train_test_split(
+        list(range(len(train_set))),
+        test_size=0.2,
+        random_state=args.seed
+    )
+
+    train_subset = Subset(train_set, train_indices)
+    val_subset = Subset(train_set, val_indices)
+
+    train_data = DataLoader(train_subset,
+                            batch_size=args.data_loader.train.batch_size,
+                            shuffle=args.data_loader.train.shuffle,
+                            collate_fn=collate_fn,
+                            drop_last=False)
+
+    val_data = DataLoader(val_subset,
+                          batch_size=args.data_loader.test.batch_size,
+                          shuffle=False,  # 検証データはシャッフルしない
+                          collate_fn=collate_fn,
+                          drop_last=False)
+
     test_data = DataLoader(test_set,
-                                 batch_size=args.data_loader.test.batch_size,
-                                 shuffle=args.data_loader.test.shuffle,
-                                 collate_fn=collate_fn,
-                                 drop_last=False)
+                           batch_size=args.data_loader.test.batch_size,
+                           shuffle=args.data_loader.test.shuffle,
+                           collate_fn=collate_fn,
+                           drop_last=False)
 
     '''
     train data:
@@ -131,17 +150,26 @@ def main(args: DictConfig):
     #   optimizer
     # ------------------
     optimizer = torch.optim.Adam(model.parameters(), lr=args.train.initial_learning_rate, weight_decay=args.train.weight_decay)
+    
+    # Create the directory if it doesn't exist
+    if not os.path.exists('checkpoints'):
+        os.makedirs('checkpoints')
+    min_val_loss = float('inf')  # 最小の検証ロスを追跡するための変数
+    
     # ------------------
     #   Start training
     # ------------------
-    model.train()
     for epoch in range(args.train.epochs):
         total_loss = 0
+        val_loss = 0
         print("on epoch: {}".format(epoch+1))
+
+        # トレーニングループ
+        model.train()
         for i, batch in enumerate(tqdm(train_data)):
             batch: Dict[str, Any]
-            event_image = batch["event_volume"].to(device) # [B, 4, 480, 640]
-            ground_truth_flow = batch["flow_gt"].to(device) # [B, 2, 480, 640]
+            event_image = batch["event_volume"].to(device)  # [B, 4, 480, 640]
+            ground_truth_flow = batch["flow_gt"].to(device)  # [B, 2, 480, 640]
             flow_dict, final_flow = model(event_image)  # [B, 2, 480, 640]
             loss: torch.Tensor = compute_multiscale_loss(flow_dict, ground_truth_flow)
             final_loss: torch.Tensor = compute_epe_error(final_flow, ground_truth_flow)
@@ -151,25 +179,33 @@ def main(args: DictConfig):
             optimizer.step()
 
             total_loss += loss.item()
-        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
-        
-        # Create the directory if it doesn't exist
-        if not os.path.exists('checkpoints'):
-            os.makedirs('checkpoints')
-            
-        current_time = time.strftime("%Y%m%d%H%M%S")
-        model_path = f"checkpoints/model_{current_time}.pth"
-        torch.save(model.state_dict(), model_path)
-        print(f"Model saved to {model_path}")
-    
-    current_time = time.strftime("%Y%m%d%H%M%S")
-    model_path = f"checkpoints/model_{current_time}.pth"
-    torch.save(model.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
 
-    # ------------------
-    #   Start predicting
-    # ------------------
+        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
+
+        # 検証ループ
+        model.eval()
+        val_loss = 0  # 検証ロスの初期化
+        with torch.no_grad():
+            for i, batch in enumerate(tqdm(val_data)):
+                batch: Dict[str, Any]
+                event_image = batch["event_volume"].to(device)  # [B, 4, 480, 640]
+                ground_truth_flow = batch["flow_gt"].to(device)  # [B, 2, 480, 640]
+                flow_dict, final_flow = model(event_image)  # [B, 2, 480, 640]
+                loss: torch.Tensor = compute_multiscale_loss(flow_dict, ground_truth_flow)
+                final_loss: torch.Tensor = compute_epe_error(final_flow, ground_truth_flow)
+                val_loss += loss.item()
+            val_loss /= len(val_data)
+            print(f'Epoch {epoch+1}, Validation Loss: {val_loss}')
+
+            # 最小の検証ロスを持つモデルを保存
+            if val_loss < min_val_loss:
+                min_val_loss = val_loss
+                current_time = time.strftime("%Y%m%d%H%M%S")
+                model_path = f"checkpoints/model_{current_time}_best.pth"
+                torch.save(model.state_dict(), model_path)
+                print(f"epoch:{epoch+1}, Best model saved to {model_path}")
+
+    # 最後にベストモデルをロードしてテストデータに対して予測を行う
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     flow: torch.Tensor = torch.tensor([]).to(device)

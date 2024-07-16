@@ -3,7 +3,7 @@ from torch import nn
 from src.models.base import *
 from typing import Dict, Any
 
-_BASE_CHANNELS = 64
+_BASE_CHANNELS = 32 # 64→32 変更
 
 class EVFlowNet(nn.Module):
     def __init__(self, args):
@@ -62,7 +62,7 @@ class EVFlowNet(nn.Module):
         inputs, flow = self.decoder4(inputs)
         flow_dict['flow3'] = flow.clone()
 
-        return flow_dict, flow
+        return flow_dict, flow # flow_dictをreturnに追加（loss関数の変更のため）
         
 
 # if __name__ == "__main__":
