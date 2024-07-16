@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Dict, Any
 import os
 import time
-import torch.nn.functional as F
-from sklearn.model_selection import train_test_split
+import torch.nn.functional as F # 追加
+from sklearn.model_selection import train_test_split # 追加
 
 class RepresentationType(Enum):
     VOXEL = auto()
@@ -47,7 +47,7 @@ def compute_multiscale_loss(pred_flows: Dict[str, torch.Tensor], gt_flow: torch.
         # 正解データを予測データのサイズにリサイズ
         scaled_gt = F.interpolate(gt_flow, size=pred_flows[scale].shape[2:], mode='bicubic', align_corners=True) # modeをbase.pyに揃える
         loss = compute_epe_error(pred_flows[scale], scaled_gt)
-        total_loss += loss * weights[scale]
+        total_loss += loss * weights[scale] # scaleに合わせて重み付け
 
     return total_loss
 
