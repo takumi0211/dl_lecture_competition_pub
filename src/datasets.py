@@ -22,6 +22,17 @@ from src.utils import RepresentationType, VoxelGrid, flow_16bit_to_float
 
 VISU_INDEX = 1
 
+def horizontal_flip(event_volume, flow_gt):
+    flipped_event_volume = torch.flip(event_volume, [2])
+    flipped_flow = torch.flip(flow_gt, [2])
+    if flipped_flow.ndim == 4:
+        flipped_flow[:, 0, :, :] = -flipped_flow[:, 0, :, :]
+    elif flipped_flow.ndim == 3:
+        flipped_flow[0, :, :] = -flipped_flow[0, :, :]
+    else:
+        raise ValueError("Unexpected tensor dimensions")
+    return flipped_event_volume, flipped_flow
+
 
 class EventSlicer:
     def __init__(self, h5f: h5py.File):
@@ -210,6 +221,8 @@ class Sequence(Dataset):
         self.visualize_samples = visualize
         self.load_gt = load_gt
         self.transforms = transforms
+        self.apply_transforms = mode == "train"  # トレーニングモードの場合のみデータ拡張を適用
+        
         if self.mode == "test":
             assert load_gt == False
             # Get Test Timestamp File
@@ -350,13 +363,13 @@ class Sequence(Dataset):
         output['name_map'] = self.name_idx
         
         if self.load_gt:
-            output['flow_gt'
-                ] = [torch.tensor(x) for x in self.load_flow(self.flow_png[index])]
+            output['flow_gt'] = [torch.tensor(x) for x in self.load_flow(self.flow_png[index])]
+            output['flow_gt'][0] = torch.moveaxis(output['flow_gt'][0], -1, 0)
+            output['flow_gt'][1] = torch.unsqueeze(output['flow_gt'][1], 0)
 
-            output['flow_gt'
-                ][0] = torch.moveaxis(output['flow_gt'][0], -1, 0)
-            output['flow_gt'
-                ][1] = torch.unsqueeze(output['flow_gt'][1], 0)
+            if self.apply_transforms:
+                output['event_volume'], output['flow_gt'][0] = horizontal_flip(output['event_volume'], output['flow_gt'][0])
+
         return output
 
     def __getitem__(self, idx):

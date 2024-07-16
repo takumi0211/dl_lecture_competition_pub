@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Any
 import os
 import time
+import torch.nn.functional as F
 
 
 class RepresentationType(Enum):
@@ -36,6 +37,19 @@ def compute_epe_error(pred_flow: torch.Tensor, gt_flow: torch.Tensor):
     epe = torch.mean(torch.mean(torch.norm(pred_flow - gt_flow, p=2, dim=1), dim=(1, 2)), dim=0)
     return epe
 
+def compute_multiscale_loss(pred_flows: Dict[str, torch.Tensor], gt_flow: torch.Tensor) -> torch.Tensor:
+    total_loss = 0
+    scales = {'flow0': 0.125, 'flow1': 0.25, 'flow2': 0.5, 'flow3': 1}
+
+    for scale, factor in scales.items():
+        # 正解データを予測データのサイズにリサイズ
+        scaled_gt = F.interpolate(gt_flow, size=pred_flows[scale].shape[2:], mode='bilinear', align_corners=True)
+        loss = compute_epe_error(pred_flows[scale], scaled_gt)
+        total_loss += loss
+
+    return total_loss
+
+
 def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
     '''
     optical flowをnpyファイルに保存
@@ -48,6 +62,7 @@ def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
 def main(args: DictConfig):
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     '''
         ディレクトリ構造:
 
@@ -127,19 +142,25 @@ def main(args: DictConfig):
             batch: Dict[str, Any]
             event_image = batch["event_volume"].to(device) # [B, 4, 480, 640]
             ground_truth_flow = batch["flow_gt"].to(device) # [B, 2, 480, 640]
-            flow = model(event_image) # [B, 2, 480, 640]
-            loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
-            print(f"batch {i} loss: {loss.item()}")
+            flow_dict, final_flow = model(event_image)  # [B, 2, 480, 640]
+            loss: torch.Tensor = compute_multiscale_loss(flow_dict, ground_truth_flow)
+            final_loss: torch.Tensor = compute_epe_error(final_flow, ground_truth_flow)
+            print(f"batch {i} loss: {loss.item()}, final loss: {final_loss.item()}")
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
-
-    # Create the directory if it doesn't exist
-    if not os.path.exists('checkpoints'):
-        os.makedirs('checkpoints')
+        
+        # Create the directory if it doesn't exist
+        if not os.path.exists('checkpoints'):
+            os.makedirs('checkpoints')
+            
+        current_time = time.strftime("%Y%m%d%H%M%S")
+        model_path = f"checkpoints/model_{current_time}.pth"
+        torch.save(model.state_dict(), model_path)
+        print(f"Model saved to {model_path}")
     
     current_time = time.strftime("%Y%m%d%H%M%S")
     model_path = f"checkpoints/model_{current_time}.pth"
@@ -157,7 +178,7 @@ def main(args: DictConfig):
         for batch in tqdm(test_data):
             batch: Dict[str, Any]
             event_image = batch["event_volume"].to(device)
-            batch_flow = model(event_image) # [1, 2, 480, 640]
+            _ , batch_flow = model(event_image) # [1, 2, 480, 640]
             flow = torch.cat((flow, batch_flow), dim=0)  # [N, 2, 480, 640]
         print("test done")
     # ------------------
