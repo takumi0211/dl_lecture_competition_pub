@@ -172,7 +172,7 @@ def main(args: DictConfig):
             flow_dict, final_flow = model(event_image)  # [B, 2, 480, 640]
             loss: torch.Tensor = compute_multiscale_loss(flow_dict, ground_truth_flow)
             final_loss: torch.Tensor = compute_epe_error(final_flow, ground_truth_flow)
-            print(f"batch {i} loss: {loss.item()}, final loss: {final_loss.item()}")
+            print(f"batch {i} loss: {loss.item()}, final loss: {final_loss.item()}") # epeも出力
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -189,10 +189,9 @@ def main(args: DictConfig):
                 batch: Dict[str, Any]
                 event_image = batch["event_volume"].to(device)  # [B, 4, 480, 640]
                 ground_truth_flow = batch["flow_gt"].to(device)  # [B, 2, 480, 640]
-                flow_dict, final_flow = model(event_image)  # [B, 2, 480, 640]
-                loss: torch.Tensor = compute_multiscale_loss(flow_dict, ground_truth_flow)
+                _ , final_flow = model(event_image)  # [B, 2, 480, 640]
                 final_loss: torch.Tensor = compute_epe_error(final_flow, ground_truth_flow)
-                val_loss += loss.item()
+                val_loss += final_loss.item() # 検証ではepeで評価
             val_loss /= len(val_data)
             print(f'Epoch {epoch+1}, Validation Loss: {val_loss}')
 
