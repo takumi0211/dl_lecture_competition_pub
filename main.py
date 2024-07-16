@@ -161,7 +161,6 @@ def main(args: DictConfig):
     # ------------------
     for epoch in range(args.train.epochs):
         total_loss = 0
-        val_loss = 0
         print("on epoch: {}".format(epoch+1))
 
         # トレーニングループ
