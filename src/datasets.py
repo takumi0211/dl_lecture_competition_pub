@@ -362,15 +362,16 @@ class Sequence(Dataset):
                 p, t, x_rect, y_rect)
             output['event_volume'] = event_representation
         output['name_map'] = self.name_idx
-        
+
         if self.load_gt:
             output['flow_gt'] = [torch.tensor(x) for x in self.load_flow(self.flow_png[index])]
             output['flow_gt'][0] = torch.moveaxis(output['flow_gt'][0], -1, 0)
             output['flow_gt'][1] = torch.unsqueeze(output['flow_gt'][1], 0)
-            
+
             # ここでtrain時のみhorizontal flipを実行
             if self.apply_transforms:
-                output['event_volume'], output['flow_gt'][0] = horizontal_flip(output['event_volume'], output['flow_gt'][0])
+                output['event_volume_flipped'], output['flow_gt_flipped'] = horizontal_flip(output['event_volume'], output['flow_gt'][0])
+                output['flow_gt_flipped'] = [output['flow_gt_flipped'], output['flow_gt'][1]]
 
         return output
 
@@ -600,22 +601,27 @@ def train_collate(sample_list):
     for field_name in sample_list[0]:
         if field_name == 'timestamp':
             batch['timestamp'] = [sample[field_name] for sample in sample_list]
-        if field_name == 'seq_name':
+        elif field_name == 'seq_name':
             batch['seq_name'] = [sample[field_name] for sample in sample_list]
-        if field_name == 'new_sequence':
-            batch['new_sequence'] = [sample[field_name]
-                                     for sample in sample_list]
-        if field_name.startswith("event_volume"):
-            batch[field_name] = torch.stack(
-                [sample[field_name] for sample in sample_list])
-        if field_name.startswith("flow_gt"):
-            if all(field_name in x for x in sample_list):
-                batch[field_name] = torch.stack(
-                    [sample[field_name][0] for sample in sample_list])
-                batch[field_name + '_valid_mask'] = torch.stack(
-                    [sample[field_name][1] for sample in sample_list])
+        elif field_name == 'new_sequence':
+            batch['new_sequence'] = [sample[field_name] for sample in sample_list]
+        elif field_name == 'event_volume':
+            event_volumes = [sample[field_name] for sample in sample_list]
+            if 'event_volume_flipped' in sample_list[0]:
+                event_volumes += [sample['event_volume_flipped'] for sample in sample_list]
+            batch[field_name] = torch.stack(event_volumes)
+        elif field_name == 'flow_gt':
+            flow_gts = [sample[field_name][0] for sample in sample_list]
+            valid_masks = [sample[field_name][1] for sample in sample_list]
+            if 'flow_gt_flipped' in sample_list[0]:
+                flow_gts += [sample['flow_gt_flipped'][0] for sample in sample_list]
+                valid_masks += [sample['flow_gt_flipped'][1] for sample in sample_list]
+            batch[field_name] = torch.stack(flow_gts)
+            batch[field_name + '_valid_mask'] = torch.stack(valid_masks)
 
     return batch
+
+
 
 
 def rec_train_collate(sample_list):

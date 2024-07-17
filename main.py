@@ -1,6 +1,9 @@
 import torch
 import hydra
 from omegaconf import DictConfig
+import torch
+import hydra
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Subset
 import random
 import numpy as np
@@ -13,8 +16,8 @@ from pathlib import Path
 from typing import Dict, Any
 import os
 import time
-import torch.nn.functional as F # 追加
-from sklearn.model_selection import train_test_split # 追加
+import torch.nn.functional as F
+from sklearn.model_selection import train_test_split
 
 class RepresentationType(Enum):
     VOXEL = auto()
@@ -41,13 +44,12 @@ def compute_epe_error(pred_flow: torch.Tensor, gt_flow: torch.Tensor):
 def compute_multiscale_loss(pred_flows: Dict[str, torch.Tensor], gt_flow: torch.Tensor) -> torch.Tensor:
     total_loss = 0
     scales = {'flow0': 0.125, 'flow1': 0.25, 'flow2': 0.5, 'flow3': 1}
-    weights = scales
 
     for scale, factor in scales.items():
         # 正解データを予測データのサイズにリサイズ
         scaled_gt = F.interpolate(gt_flow, size=pred_flows[scale].shape[2:], mode='bicubic', align_corners=True) # modeをbase.pyに揃える
         loss = compute_epe_error(pred_flows[scale], scaled_gt)
-        total_loss += loss * weights[scale] # scaleに合わせて重み付け
+        total_loss += loss 
 
     return total_loss
 
@@ -103,7 +105,7 @@ def main(args: DictConfig):
     # トレーニングデータをトレーニングと検証に分割する
     train_indices, val_indices = train_test_split(
         list(range(len(train_set))),
-        test_size=0.2,
+        test_size=0.1,
         random_state=args.seed
     )
 
@@ -161,6 +163,7 @@ def main(args: DictConfig):
     # ------------------
     for epoch in range(args.train.epochs):
         total_loss = 0
+        val_loss = 0
         print("on epoch: {}".format(epoch+1))
 
         # トレーニングループ
@@ -172,7 +175,7 @@ def main(args: DictConfig):
             flow_dict, final_flow = model(event_image)  # [B, 2, 480, 640]
             loss: torch.Tensor = compute_multiscale_loss(flow_dict, ground_truth_flow)
             final_loss: torch.Tensor = compute_epe_error(final_flow, ground_truth_flow)
-            print(f"batch {i} loss: {loss.item()}, final loss: {final_loss.item()}") # epeも出力
+            print(f"batch {i} loss: {loss.item()}, final loss: {final_loss.item()}")
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -189,9 +192,9 @@ def main(args: DictConfig):
                 batch: Dict[str, Any]
                 event_image = batch["event_volume"].to(device)  # [B, 4, 480, 640]
                 ground_truth_flow = batch["flow_gt"].to(device)  # [B, 2, 480, 640]
-                _ , final_flow = model(event_image)  # [B, 2, 480, 640]
+                flow_dict, final_flow = model(event_image)  # [B, 2, 480, 640]
                 final_loss: torch.Tensor = compute_epe_error(final_flow, ground_truth_flow)
-                val_loss += final_loss.item() # 検証ではepeで評価
+                val_loss += final_loss.item()
             val_loss /= len(val_data)
             print(f'Epoch {epoch+1}, Validation Loss: {val_loss}')
 
